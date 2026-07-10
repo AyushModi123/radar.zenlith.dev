@@ -150,12 +150,10 @@
             flex-direction: column;
         }
         .sheet-handle {
-            display: flex; flex-direction: column; align-items: center;
-            padding: 0.55rem 1rem 0.4rem;
+            display: flex; flex-direction: column;
+            padding: 0.7rem 1rem 0.55rem;
             cursor: pointer;
-            gap: 0.5rem;
         }
-        .grabber { width: 40px; height: 4px; border-radius: 9999px; background: rgba(255,255,255,0.25); }
         .sheet-summary {
             display: flex; align-items: center; gap: 0.6rem;
             width: 100%;
@@ -343,21 +341,6 @@
             box-shadow: none; padding: 1rem;
         }
 
-        /* ---------- Paused banner ---------- */
-        .paused-banner {
-            position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 3.4rem);
-            transform: translateX(-50%) translateY(-140%);
-            z-index: 20;
-            background: rgba(245, 158, 11, 0.95);
-            color: #1c1206;
-            font-size: 0.82rem; font-weight: 600;
-            padding: 0.55rem 1rem; border-radius: 9999px;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-            transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
-            max-width: 90vw; text-align: center;
-        }
-        .paused-banner.show { transform: translateX(-50%) translateY(0); }
-
         /* ---------- Toast ---------- */
         #toast {
             position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 5.5rem);
@@ -406,7 +389,6 @@
     <!-- Bottom peer sheet -->
     <div class="sheet hidden" id="sheet">
         <div class="sheet-handle" id="sheet-handle" role="button" tabindex="0" aria-label="Toggle peer list">
-            <div class="grabber"></div>
             <div class="sheet-summary">
                 <span class="title" id="sheet-title">On the radar</span>
                 <span class="sub" id="sheet-sub">just you</span>
@@ -415,7 +397,6 @@
         <ul class="peer-list" id="peer-list"></ul>
     </div>
 
-    <div class="paused-banner" id="paused-banner">⏱ Radar was paused in the background — catching up…</div>
     <div id="toast" role="status" aria-live="polite"></div>
 
     <!-- Join overlay -->
@@ -1001,7 +982,7 @@
         const peerListEl = $('peer-list'), sheetSub = $('sheet-sub'), sheetTitle = $('sheet-title');
         const meNameEl = $('me-name'), meshChip = $('chip-mesh'), meshText = $('mesh-text');
         const gpsChip = $('chip-gps'), gpsText = $('gps-text');
-        const toastEl = $('toast'), pausedBanner = $('paused-banner');
+        const toastEl = $('toast');
 
         // =============================================================
         // Toast
@@ -1161,7 +1142,6 @@
             };
             updateMyMarker();
             updateGps();
-            hidePaused(); // a fresh fix proves GPS is live — never show "paused"
             if (!firstFixDone && mapReady) { firstFixDone = true; map.jumpTo({ center: [myPos.lng, myPos.lat], zoom: 15 }); }
             if (followMe && mapReady) map.easeTo({ center: [myPos.lng, myPos.lat], duration: 600 });
         }
@@ -1671,32 +1651,10 @@
                 }
             } catch {}
         }
-        // The "paused" banner is a message for the moment the user RETURNS: it
-        // warns that GPS didn't update while the tab was backgrounded. Showing
-        // it *while* hidden is pointless (nobody sees it) and left it stuck on,
-        // so instead we flash it briefly on return and clear it the instant a
-        // fresh fix proves GPS is live again.
-        let hiddenSince = 0, pausedTimer = null;
-        function hidePaused() {
-            clearTimeout(pausedTimer);
-            pausedBanner.classList.remove('show');
-        }
-        function flashPaused() {
-            pausedBanner.classList.add('show');
-            clearTimeout(pausedTimer);
-            pausedTimer = setTimeout(hidePaused, 4000);
-        }
+        // Mobile browsers release the screen wake lock whenever the tab is
+        // backgrounded, so re-acquire it each time we come back to the fore.
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') {
-                if (sessionStarted) {
-                    requestWakeLock();
-                    // Only if we were away long enough that GPS likely stalled.
-                    if (hiddenSince && Date.now() - hiddenSince > 4000) flashPaused();
-                }
-                hiddenSince = 0;
-            } else if (sessionStarted) {
-                hiddenSince = Date.now();
-            }
+            if (document.visibilityState === 'visible' && sessionStarted) requestWakeLock();
         });
 
         // =============================================================
