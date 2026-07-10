@@ -1,0 +1,8 @@
+# Build artifacts
+/radar-server
+/radar-server.exe
+/server
+*.exe
+
+# Local editor/tooling
+/.claude/
