@@ -1,0 +1,1738 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0f172a">
+    <title>Radar — Ephemeral Group Location</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: rgba(30, 41, 59, 0.82);
+            --surface-solid: #1e293b;
+            --border: rgba(255, 255, 255, 0.1);
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #10b981;
+            --warn: #f59e0b;
+            --danger: #ef4444;
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        html, body {
+            margin: 0;
+            height: 100%;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        #map {
+            position: absolute;
+            inset: 0;
+            background: var(--bg);
+        }
+
+        /* MapLibre attribution — keep it legible on dark tiles */
+        .maplibregl-ctrl-attrib {
+            background: rgba(15, 23, 42, 0.7) !important;
+            color: var(--text-dim) !important;
+            font-size: 10px;
+        }
+        .maplibregl-ctrl-attrib a { color: var(--text-dim) !important; }
+
+        /* ---------- Top status bar ---------- */
+        .topbar {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.6rem 0.75rem;
+            padding-top: max(0.6rem, env(safe-area-inset-top));
+            background: linear-gradient(to bottom, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0));
+            pointer-events: none;
+        }
+        .topbar > * { pointer-events: auto; }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-weight: 600;
+            font-size: 0.95rem;
+            letter-spacing: 0.01em;
+        }
+        .brand .blip {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+            70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .chips { display: flex; gap: 0.4rem; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+        .chip {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 9999px;
+            padding: 0.3rem 0.7rem;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            backdrop-filter: blur(10px);
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .chip strong { color: var(--text); font-weight: 600; }
+        .chip .dotmini { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
+        .chip.ok .dotmini { background: var(--success); }
+        .chip.warn .dotmini { background: var(--warn); }
+        .chip.bad .dotmini { background: var(--danger); }
+
+        /* ---------- Map controls ---------- */
+        .map-controls {
+            position: absolute;
+            right: 0.75rem;
+            bottom: calc(0.9rem + var(--sheet-peek, 116px) + env(safe-area-inset-bottom));
+            z-index: 9;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ctrl-btn {
+            width: 46px; height: 46px;
+            border-radius: 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            backdrop-filter: blur(10px);
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.2rem;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            transition: transform 0.15s, background 0.2s, border-color 0.2s;
+        }
+        .ctrl-btn:active { transform: scale(0.92); }
+        .ctrl-btn.active { border-color: var(--accent); color: #bfdbfe; background: rgba(59,130,246,0.18); }
+        .ctrl-btn svg { width: 22px; height: 22px; }
+
+        /* ---------- Bottom peer sheet ---------- */
+        .sheet {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            z-index: 12;
+            background: var(--surface);
+            backdrop-filter: blur(16px);
+            border-top: 1px solid var(--border);
+            border-radius: 20px 20px 0 0;
+            box-shadow: 0 -8px 30px rgba(0,0,0,0.4);
+            padding-bottom: env(safe-area-inset-bottom);
+            transform: translateY(var(--sheet-hidden, 0));
+            transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+            max-height: 62vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .sheet-handle {
+            display: flex; flex-direction: column;
+            padding: 0.7rem 1rem 0.55rem;
+            cursor: pointer;
+        }
+        .sheet-summary {
+            display: flex; align-items: center; gap: 0.6rem;
+            width: 100%;
+            font-size: 0.85rem;
+        }
+        .sheet-summary .title { font-weight: 600; }
+        .sheet-summary .sub { color: var(--text-dim); font-size: 0.78rem; margin-left: auto; }
+
+        .peer-list {
+            list-style: none;
+            margin: 0;
+            padding: 0.25rem 0.75rem 0.9rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .peer-row {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.6rem 0.5rem;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .peer-row:hover, .peer-row:focus-visible { background: rgba(255,255,255,0.05); outline: none; }
+        .peer-dot {
+            width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 0.72rem; font-weight: 700; color: #0b1220;
+            position: relative;
+        }
+        .peer-dot.stale { opacity: 0.4; }
+        .peer-meta { min-width: 0; flex: 1; }
+        .peer-name { font-weight: 600; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .peer-status { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.1rem; }
+        .peer-status.live { color: var(--success); }
+        .peer-status.warnc { color: var(--warn); }
+        .peer-status.badc { color: var(--danger); }
+        .peer-dist { text-align: right; flex-shrink: 0; }
+        .peer-dist .d { font-weight: 600; font-size: 0.9rem; }
+        .peer-dist .b { font-size: 0.72rem; color: var(--text-dim); }
+        .peer-empty { text-align: center; color: var(--text-dim); padding: 1.4rem 1rem; font-size: 0.9rem; line-height: 1.5; }
+
+        /* ---------- Custom map markers ---------- */
+        .pin { position: relative; width: 0; height: 0; will-change: transform; }
+        .pin .rotor {
+            position: absolute; left: -20px; top: -20px; width: 40px; height: 40px;
+            transition: transform 0.5s ease-out;
+        }
+        .pin .chevron {
+            position: absolute; left: 50%; top: -3px; transform: translateX(-50%);
+            width: 0; height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 9px solid var(--pin-color, #38bdf8);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .pin.moving .chevron { opacity: 1; }
+        .pin .dot {
+            position: absolute; left: -9px; top: -9px;
+            width: 18px; height: 18px; border-radius: 50%;
+            background: var(--pin-color, #38bdf8);
+            border: 2.5px solid #0f172a;
+            box-shadow: 0 0 0 1.5px var(--pin-color, #38bdf8), 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .pin .tag {
+            position: absolute; left: 14px; top: -10px;
+            background: rgba(15,23,42,0.85);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 0.72rem; font-weight: 600;
+            padding: 0.15rem 0.45rem; border-radius: 7px;
+            white-space: nowrap;
+            backdrop-filter: blur(6px);
+        }
+        .pin .tag .spd { color: var(--text-dim); font-weight: 500; }
+        .pin.stale { transition: opacity 0.6s; }
+        .pin.stale .dot { opacity: 0.35; }
+        .pin.stale .tag { opacity: 0.6; }
+
+        /* Own marker: pulsing blue "you are here" */
+        .me .dot {
+            background: var(--accent);
+            box-shadow: 0 0 0 1.5px var(--accent), 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .me .halo {
+            position: absolute; left: -18px; top: -18px;
+            width: 36px; height: 36px; border-radius: 50%;
+            background: rgba(59,130,246,0.35);
+            animation: halo 2.2s infinite ease-out;
+        }
+        @keyframes halo {
+            0% { transform: scale(0.4); opacity: 0.7; }
+            100% { transform: scale(1.6); opacity: 0; }
+        }
+
+        /* ---------- Overlays / modals ---------- */
+        .overlay {
+            position: fixed; inset: 0; z-index: 50;
+            background: rgba(8, 12, 24, 0.72);
+            backdrop-filter: blur(6px);
+            display: flex; align-items: center; justify-content: center;
+            padding: 1.25rem;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.25s;
+        }
+        .overlay.active { opacity: 1; pointer-events: auto; }
+        .card {
+            background: var(--surface-solid);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 1.75rem 1.5rem;
+            max-width: 380px; width: 100%;
+            text-align: center;
+            box-shadow: 0 25px 60px -15px rgba(0,0,0,0.7);
+            transform: translateY(14px) scale(0.98);
+            transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+        }
+        .overlay.active .card { transform: none; }
+        .card .radar-mark {
+            width: 58px; height: 58px; margin: 0 auto 1rem;
+            display: block;
+        }
+        .card h1 { margin: 0 0 0.5rem; font-size: 1.35rem; }
+        .card h2 { margin: 0 0 0.5rem; font-size: 1.15rem; }
+        .card p { color: var(--text-dim); line-height: 1.55; margin: 0 0 1.25rem; font-size: 0.92rem; }
+        .card p.small { font-size: 0.82rem; }
+        .privacy-note {
+            display: flex; gap: 0.6rem; text-align: left;
+            background: rgba(16,185,129,0.08);
+            border: 1px solid rgba(16,185,129,0.25);
+            border-radius: 12px;
+            padding: 0.7rem 0.8rem;
+            margin: 0 0 1.25rem;
+            font-size: 0.8rem; color: #a7f3d0; line-height: 1.5;
+        }
+        .privacy-note svg { flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px; }
+
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+            width: 100%;
+            padding: 0.85rem 1.25rem;
+            border-radius: 12px;
+            font-weight: 600; font-size: 0.95rem;
+            border: none; cursor: pointer;
+            font-family: inherit;
+            transition: background 0.2s, transform 0.12s, border-color 0.2s;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-ghost { background: rgba(255,255,255,0.07); color: var(--text); margin-top: 0.6rem; }
+        .btn-ghost:hover { background: rgba(255,255,255,0.12); }
+        .btn-danger { background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+        .btn-danger:hover { background: rgba(239,68,68,0.25); }
+
+        .share-row { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; }
+        .share-row input {
+            flex: 1; min-width: 0;
+            background: rgba(0,0,0,0.35);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-dim);
+            padding: 0.7rem 0.75rem;
+            font-family: inherit; font-size: 0.82rem;
+        }
+        .share-row button {
+            flex-shrink: 0; width: auto; padding: 0.7rem 1rem;
+            border-radius: 10px;
+        }
+        /* QR code — always light background so it stays scannable in any theme */
+        .qr-wrap {
+            width: 200px; height: 200px;
+            margin: 0 auto 1.1rem;
+            padding: 12px;
+            background: #ffffff;
+            border-radius: 14px;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .qr-wrap svg { width: 100%; height: 100%; display: block; shape-rendering: crispEdges; }
+        .qr-wrap.qr-error {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-dim);
+            font-size: 0.8rem; text-align: center;
+            box-shadow: none; padding: 1rem;
+        }
+
+        /* ---------- Toast ---------- */
+        #toast {
+            position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 5.5rem);
+            transform: translateX(-50%) translateY(160%);
+            z-index: 60;
+            background: var(--surface-solid);
+            border: 1px solid var(--border);
+            padding: 0.65rem 1.15rem; border-radius: 9999px;
+            font-size: 0.85rem; color: var(--text);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+            max-width: 90vw; text-align: center;
+        }
+        #toast.show { transform: translateX(-50%) translateY(0); }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <!-- Top status bar -->
+    <div class="topbar hidden" id="topbar">
+        <div class="brand"><span class="blip"></span> Radar</div>
+        <div class="chips">
+            <div class="chip" id="chip-me"><span class="dotmini"></span><strong id="me-name">…</strong></div>
+            <div class="chip" id="chip-mesh"><span class="dotmini"></span><span id="mesh-text">0 linked</span></div>
+            <div class="chip" id="chip-gps"><span class="dotmini"></span><span id="gps-text">GPS…</span></div>
+        </div>
+    </div>
+
+    <!-- Map controls -->
+    <div class="map-controls hidden" id="map-controls">
+        <button class="ctrl-btn" id="btn-invite" title="Invite people" aria-label="Invite people">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/></svg>
+        </button>
+        <button class="ctrl-btn" id="btn-fit" title="Fit everyone" aria-label="Fit everyone in view">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button class="ctrl-btn" id="btn-follow" title="Follow me" aria-label="Follow my location">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+        </button>
+    </div>
+
+    <!-- Bottom peer sheet -->
+    <div class="sheet hidden" id="sheet">
+        <div class="sheet-handle" id="sheet-handle" role="button" tabindex="0" aria-label="Toggle peer list">
+            <div class="sheet-summary">
+                <span class="title" id="sheet-title">On the radar</span>
+                <span class="sub" id="sheet-sub">just you</span>
+            </div>
+        </div>
+        <ul class="peer-list" id="peer-list"></ul>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <!-- Join overlay -->
+    <div class="overlay active" id="join-overlay" role="dialog" aria-modal="true">
+        <div class="card">
+            <svg class="radar-mark" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#60a5fa"/><stop offset="1" stop-color="#34d399"/></linearGradient></defs>
+                <circle cx="32" cy="32" r="22" fill="none" stroke="url(#g)" stroke-width="2.5" opacity="0.5"/>
+                <circle cx="32" cy="32" r="13" fill="none" stroke="url(#g)" stroke-width="2.5" opacity="0.75"/>
+                <circle cx="32" cy="32" r="5" fill="url(#g)"/>
+                <circle cx="46" cy="21" r="3.2" fill="#34d399"/><circle cx="21" cy="44" r="3.2" fill="#60a5fa"/>
+            </svg>
+            <h1 id="join-title">Join the radar</h1>
+            <p id="join-desc">See your group move live on the map. Your location is shared only with people in this room, directly device-to-device.</p>
+            <div class="privacy-note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <span>No database, no tracking. Coordinates flow peer-to-peer and vanish the moment everyone closes the tab.</span>
+            </div>
+            <button class="btn btn-primary" id="join-btn">Join &amp; share my location</button>
+            <button class="btn btn-ghost" id="join-invite-btn">Invite people first</button>
+        </div>
+    </div>
+
+    <!-- Permission-denied recovery -->
+    <div class="overlay" id="denied-overlay" role="dialog" aria-modal="true">
+        <div class="card">
+            <h2>📍 Location is blocked</h2>
+            <p>The radar needs your location to place you on the map. Nothing works without it.</p>
+            <p class="small" id="denied-steps"></p>
+            <button class="btn btn-primary" id="denied-retry">Try again</button>
+        </div>
+    </div>
+
+    <!-- Connection error (room full / offline) -->
+    <div class="overlay" id="error-overlay" role="dialog" aria-modal="true">
+        <div class="card">
+            <h2 id="error-title">Couldn't join</h2>
+            <p id="error-desc">The radar may be full (max 8 people) or the signaling server is offline. Try again in a moment.</p>
+            <button class="btn btn-primary" id="error-retry">Retry</button>
+        </div>
+    </div>
+
+    <!-- Invite modal -->
+    <div class="overlay" id="invite-overlay" role="dialog" aria-modal="true">
+        <div class="card">
+            <h2>Invite your group</h2>
+            <p class="small">Scan to join, or share the link. Anyone who opens it joins your radar — on any network, up to 8 people.</p>
+            <div class="qr-wrap" id="qr-wrap"><div id="qr-code" role="img" aria-label="QR code linking to this radar"></div></div>
+            <div class="share-row">
+                <input type="text" id="invite-link" readonly aria-label="Invite link">
+                <button class="btn btn-primary" id="invite-copy">Copy</button>
+            </div>
+            <button class="btn btn-primary" id="invite-share">Share…</button>
+            <button class="btn btn-ghost" id="invite-close">Done</button>
+        </div>
+    </div>
+
+    <!--
+      QR Code generator library (JavaScript) — Copyright (c) Project Nayuki. MIT License.
+      https://www.nayuki.io/page/qr-code-generator-library
+      Inlined (no CDN) so the QR renders even on restricted/offline networks.
+    -->
+    <script>
+        "use strict";
+        var qrcodegen;
+        (function (qrcodegen) {
+            class QrCode {
+                constructor(version, errorCorrectionLevel, dataCodewords, msk) {
+                    this.version = version;
+                    this.errorCorrectionLevel = errorCorrectionLevel;
+                    this.modules = [];
+                    this.isFunction = [];
+                    if (version < QrCode.MIN_VERSION || version > QrCode.MAX_VERSION)
+                        throw new RangeError("Version value out of range");
+                    if (msk < -1 || msk > 7)
+                        throw new RangeError("Mask value out of range");
+                    this.size = version * 4 + 17;
+                    let row = [];
+                    for (let i = 0; i < this.size; i++) row.push(false);
+                    for (let i = 0; i < this.size; i++) {
+                        this.modules.push(row.slice());
+                        this.isFunction.push(row.slice());
+                    }
+                    this.drawFunctionPatterns();
+                    const allCodewords = this.addEccAndInterleave(dataCodewords);
+                    this.drawCodewords(allCodewords);
+                    if (msk == -1) {
+                        let minPenalty = 1000000000;
+                        for (let i = 0; i < 8; i++) {
+                            this.applyMask(i);
+                            this.drawFormatBits(i);
+                            const penalty = this.getPenaltyScore();
+                            if (penalty < minPenalty) { msk = i; minPenalty = penalty; }
+                            this.applyMask(i);
+                        }
+                    }
+                    this.mask = msk;
+                    this.applyMask(msk);
+                    this.drawFormatBits(msk);
+                    this.isFunction = [];
+                }
+                static encodeText(text, ecl) {
+                    const segs = qrcodegen.QrSegment.makeSegments(text);
+                    return QrCode.encodeSegments(segs, ecl);
+                }
+                static encodeSegments(segs, ecl, minVersion, maxVersion, mask, boostEcl) {
+                    if (minVersion === undefined) minVersion = 1;
+                    if (maxVersion === undefined) maxVersion = 40;
+                    if (mask === undefined) mask = -1;
+                    if (boostEcl === undefined) boostEcl = true;
+                    let version, dataUsedBits;
+                    for (version = minVersion; ; version++) {
+                        const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
+                        const usedBits = QrSegment.getTotalBits(segs, version);
+                        if (usedBits <= dataCapacityBits) { dataUsedBits = usedBits; break; }
+                        if (version >= maxVersion) throw new RangeError("Data too long");
+                    }
+                    for (const newEcl of [QrCode.Ecc.MEDIUM, QrCode.Ecc.QUARTILE, QrCode.Ecc.HIGH]) {
+                        if (boostEcl && dataUsedBits <= QrCode.getNumDataCodewords(version, newEcl) * 8) ecl = newEcl;
+                    }
+                    let bb = [];
+                    for (const seg of segs) {
+                        appendBits(seg.mode.modeBits, 4, bb);
+                        appendBits(seg.numChars, seg.mode.numCharCountBits(version), bb);
+                        for (const b of seg.getData()) bb.push(b);
+                    }
+                    const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
+                    appendBits(0, Math.min(4, dataCapacityBits - bb.length), bb);
+                    appendBits(0, (8 - bb.length % 8) % 8, bb);
+                    for (let padByte = 0xEC; bb.length < dataCapacityBits; padByte ^= 0xEC ^ 0x11)
+                        appendBits(padByte, 8, bb);
+                    let dataCodewords = [];
+                    while (dataCodewords.length * 8 < bb.length) dataCodewords.push(0);
+                    bb.forEach((b, i) => dataCodewords[i >>> 3] |= b << (7 - (i & 7)));
+                    return new QrCode(version, ecl, dataCodewords, mask);
+                }
+                getModule(x, y) {
+                    return 0 <= x && x < this.size && 0 <= y && y < this.size && this.modules[y][x];
+                }
+                drawFunctionPatterns() {
+                    for (let i = 0; i < this.size; i++) {
+                        this.setFunctionModule(6, i, i % 2 == 0);
+                        this.setFunctionModule(i, 6, i % 2 == 0);
+                    }
+                    this.drawFinderPattern(3, 3);
+                    this.drawFinderPattern(this.size - 4, 3);
+                    this.drawFinderPattern(3, this.size - 4);
+                    const alignPatPos = this.getAlignmentPatternPositions();
+                    const numAlign = alignPatPos.length;
+                    for (let i = 0; i < numAlign; i++) {
+                        for (let j = 0; j < numAlign; j++) {
+                            if (!(i == 0 && j == 0 || i == 0 && j == numAlign - 1 || i == numAlign - 1 && j == 0))
+                                this.drawAlignmentPattern(alignPatPos[i], alignPatPos[j]);
+                        }
+                    }
+                    this.drawFormatBits(0);
+                    this.drawVersion();
+                }
+                drawFormatBits(mask) {
+                    const data = this.errorCorrectionLevel.formatBits << 3 | mask;
+                    let rem = data;
+                    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+                    const bits = (data << 10 | rem) ^ 0x5412;
+                    for (let i = 0; i <= 5; i++) this.setFunctionModule(8, i, getBit(bits, i));
+                    this.setFunctionModule(8, 7, getBit(bits, 6));
+                    this.setFunctionModule(8, 8, getBit(bits, 7));
+                    this.setFunctionModule(7, 8, getBit(bits, 8));
+                    for (let i = 9; i < 15; i++) this.setFunctionModule(14 - i, 8, getBit(bits, i));
+                    for (let i = 0; i < 8; i++) this.setFunctionModule(this.size - 1 - i, 8, getBit(bits, i));
+                    for (let i = 8; i < 15; i++) this.setFunctionModule(8, this.size - 15 + i, getBit(bits, i));
+                    this.setFunctionModule(8, this.size - 8, true);
+                }
+                drawVersion() {
+                    if (this.version < 7) return;
+                    let rem = this.version;
+                    for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+                    const bits = this.version << 12 | rem;
+                    for (let i = 0; i < 18; i++) {
+                        const color = getBit(bits, i);
+                        const a = this.size - 11 + i % 3, b = Math.floor(i / 3);
+                        this.setFunctionModule(a, b, color);
+                        this.setFunctionModule(b, a, color);
+                    }
+                }
+                drawFinderPattern(x, y) {
+                    for (let dy = -4; dy <= 4; dy++) {
+                        for (let dx = -4; dx <= 4; dx++) {
+                            const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                            const xx = x + dx, yy = y + dy;
+                            if (0 <= xx && xx < this.size && 0 <= yy && yy < this.size)
+                                this.setFunctionModule(xx, yy, dist != 2 && dist != 4);
+                        }
+                    }
+                }
+                drawAlignmentPattern(x, y) {
+                    for (let dy = -2; dy <= 2; dy++)
+                        for (let dx = -2; dx <= 2; dx++)
+                            this.setFunctionModule(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) != 1);
+                }
+                setFunctionModule(x, y, isDark) {
+                    this.modules[y][x] = isDark;
+                    this.isFunction[y][x] = true;
+                }
+                addEccAndInterleave(data) {
+                    const ver = this.version, ecl = this.errorCorrectionLevel;
+                    if (data.length != QrCode.getNumDataCodewords(ver, ecl)) throw new RangeError("Invalid argument");
+                    const numBlocks = QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver];
+                    const blockEccLen = QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver];
+                    const rawCodewords = Math.floor(QrCode.getNumRawDataModules(ver) / 8);
+                    const numShortBlocks = numBlocks - rawCodewords % numBlocks;
+                    const shortBlockLen = Math.floor(rawCodewords / numBlocks);
+                    let blocks = [];
+                    const rsDiv = QrCode.reedSolomonComputeDivisor(blockEccLen);
+                    for (let i = 0, k = 0; i < numBlocks; i++) {
+                        let dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
+                        k += dat.length;
+                        const ecc = QrCode.reedSolomonComputeRemainder(dat, rsDiv);
+                        if (i < numShortBlocks) dat.push(0);
+                        blocks.push(dat.concat(ecc));
+                    }
+                    let result = [];
+                    for (let i = 0; i < blocks[0].length; i++) {
+                        blocks.forEach((block, j) => {
+                            if (i != shortBlockLen - blockEccLen || j >= numShortBlocks) result.push(block[i]);
+                        });
+                    }
+                    return result;
+                }
+                drawCodewords(data) {
+                    if (data.length != Math.floor(QrCode.getNumRawDataModules(this.version) / 8)) throw new RangeError("Invalid argument");
+                    let i = 0;
+                    for (let right = this.size - 1; right >= 1; right -= 2) {
+                        if (right == 6) right = 5;
+                        for (let vert = 0; vert < this.size; vert++) {
+                            for (let j = 0; j < 2; j++) {
+                                const x = right - j;
+                                const upward = ((right + 1) & 2) == 0;
+                                const y = upward ? this.size - 1 - vert : vert;
+                                if (!this.isFunction[y][x] && i < data.length * 8) {
+                                    this.modules[y][x] = getBit(data[i >>> 3], 7 - (i & 7));
+                                    i++;
+                                }
+                            }
+                        }
+                    }
+                }
+                applyMask(mask) {
+                    for (let y = 0; y < this.size; y++) {
+                        for (let x = 0; x < this.size; x++) {
+                            let invert;
+                            switch (mask) {
+                                case 0: invert = (x + y) % 2 == 0; break;
+                                case 1: invert = y % 2 == 0; break;
+                                case 2: invert = x % 3 == 0; break;
+                                case 3: invert = (x + y) % 3 == 0; break;
+                                case 4: invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 == 0; break;
+                                case 5: invert = x * y % 2 + x * y % 3 == 0; break;
+                                case 6: invert = (x * y % 2 + x * y % 3) % 2 == 0; break;
+                                case 7: invert = ((x + y) % 2 + x * y % 3) % 2 == 0; break;
+                                default: throw new Error("Unreachable");
+                            }
+                            if (!this.isFunction[y][x] && invert) this.modules[y][x] = !this.modules[y][x];
+                        }
+                    }
+                }
+                getPenaltyScore() {
+                    let result = 0;
+                    for (let y = 0; y < this.size; y++) {
+                        let runColor = false, runX = 0, runHistory = [0, 0, 0, 0, 0, 0, 0];
+                        for (let x = 0; x < this.size; x++) {
+                            if (this.modules[y][x] == runColor) {
+                                runX++;
+                                if (runX == 5) result += QrCode.PENALTY_N1;
+                                else if (runX > 5) result++;
+                            } else {
+                                this.finderPenaltyAddHistory(runX, runHistory);
+                                if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3;
+                                runColor = this.modules[y][x];
+                                runX = 1;
+                            }
+                        }
+                        result += this.finderPenaltyTerminateAndCount(runColor, runX, runHistory) * QrCode.PENALTY_N3;
+                    }
+                    for (let x = 0; x < this.size; x++) {
+                        let runColor = false, runY = 0, runHistory = [0, 0, 0, 0, 0, 0, 0];
+                        for (let y = 0; y < this.size; y++) {
+                            if (this.modules[y][x] == runColor) {
+                                runY++;
+                                if (runY == 5) result += QrCode.PENALTY_N1;
+                                else if (runY > 5) result++;
+                            } else {
+                                this.finderPenaltyAddHistory(runY, runHistory);
+                                if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3;
+                                runColor = this.modules[y][x];
+                                runY = 1;
+                            }
+                        }
+                        result += this.finderPenaltyTerminateAndCount(runColor, runY, runHistory) * QrCode.PENALTY_N3;
+                    }
+                    for (let y = 0; y < this.size - 1; y++) {
+                        for (let x = 0; x < this.size - 1; x++) {
+                            const color = this.modules[y][x];
+                            if (color == this.modules[y][x + 1] && color == this.modules[y + 1][x] && color == this.modules[y + 1][x + 1])
+                                result += QrCode.PENALTY_N2;
+                        }
+                    }
+                    let dark = 0;
+                    for (const row of this.modules) dark = row.reduce((sum, color) => sum + (color ? 1 : 0), dark);
+                    const total = this.size * this.size;
+                    const k = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
+                    result += k * QrCode.PENALTY_N4;
+                    return result;
+                }
+                getAlignmentPatternPositions() {
+                    if (this.version == 1) return [];
+                    const numAlign = Math.floor(this.version / 7) + 2;
+                    const step = (this.version == 32) ? 26 : Math.ceil((this.size - 13) / (numAlign * 2 - 2)) * 2;
+                    let result = [6];
+                    for (let pos = this.size - 7; result.length < numAlign; pos -= step) result.splice(1, 0, pos);
+                    return result;
+                }
+                static getNumRawDataModules(ver) {
+                    if (ver < QrCode.MIN_VERSION || ver > QrCode.MAX_VERSION) throw new RangeError("Version number out of range");
+                    let result = (16 * ver + 128) * ver + 64;
+                    if (ver >= 2) {
+                        const numAlign = Math.floor(ver / 7) + 2;
+                        result -= (25 * numAlign - 10) * numAlign - 55;
+                        if (ver >= 7) result -= 36;
+                    }
+                    return result;
+                }
+                static getNumDataCodewords(ver, ecl) {
+                    return Math.floor(QrCode.getNumRawDataModules(ver) / 8) -
+                        QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver] * QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver];
+                }
+                static reedSolomonComputeDivisor(degree) {
+                    if (degree < 1 || degree > 255) throw new RangeError("Degree out of range");
+                    let result = [];
+                    for (let i = 0; i < degree - 1; i++) result.push(0);
+                    result.push(1);
+                    let root = 1;
+                    for (let i = 0; i < degree; i++) {
+                        for (let j = 0; j < result.length; j++) {
+                            result[j] = QrCode.reedSolomonMultiply(result[j], root);
+                            if (j + 1 < result.length) result[j] ^= result[j + 1];
+                        }
+                        root = QrCode.reedSolomonMultiply(root, 0x02);
+                    }
+                    return result;
+                }
+                static reedSolomonComputeRemainder(data, divisor) {
+                    let result = divisor.map(_ => 0);
+                    for (const b of data) {
+                        const factor = b ^ result.shift();
+                        result.push(0);
+                        divisor.forEach((coef, i) => result[i] ^= QrCode.reedSolomonMultiply(coef, factor));
+                    }
+                    return result;
+                }
+                static reedSolomonMultiply(x, y) {
+                    if (x >>> 8 != 0 || y >>> 8 != 0) throw new RangeError("Byte out of range");
+                    let z = 0;
+                    for (let i = 7; i >= 0; i--) {
+                        z = (z << 1) ^ ((z >>> 7) * 0x11D);
+                        z ^= ((y >>> i) & 1) * x;
+                    }
+                    return z;
+                }
+                finderPenaltyCountPatterns(runHistory) {
+                    const n = runHistory[1];
+                    const core = n > 0 && runHistory[2] == n && runHistory[3] == n * 3 && runHistory[4] == n && runHistory[5] == n;
+                    return (core && runHistory[0] >= n * 4 && runHistory[6] >= n ? 1 : 0)
+                        + (core && runHistory[6] >= n * 4 && runHistory[0] >= n ? 1 : 0);
+                }
+                finderPenaltyTerminateAndCount(currentRunColor, currentRunLength, runHistory) {
+                    if (currentRunColor) {
+                        this.finderPenaltyAddHistory(currentRunLength, runHistory);
+                        currentRunLength = 0;
+                    }
+                    currentRunLength += this.size;
+                    this.finderPenaltyAddHistory(currentRunLength, runHistory);
+                    return this.finderPenaltyCountPatterns(runHistory);
+                }
+                finderPenaltyAddHistory(currentRunLength, runHistory) {
+                    if (runHistory[0] == 0) currentRunLength += this.size;
+                    runHistory.pop();
+                    runHistory.unshift(currentRunLength);
+                }
+            }
+            QrCode.MIN_VERSION = 1;
+            QrCode.MAX_VERSION = 40;
+            QrCode.PENALTY_N1 = 3;
+            QrCode.PENALTY_N2 = 3;
+            QrCode.PENALTY_N3 = 40;
+            QrCode.PENALTY_N4 = 10;
+            QrCode.ECC_CODEWORDS_PER_BLOCK = [
+                [-1, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+                [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28],
+                [-1, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+                [-1, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]];
+            QrCode.NUM_ERROR_CORRECTION_BLOCKS = [
+                [-1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25],
+                [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49],
+                [-1, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68],
+                [-1, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81]];
+            QrCode.Ecc = class Ecc {
+                constructor(ordinal, formatBits) { this.ordinal = ordinal; this.formatBits = formatBits; }
+            };
+            QrCode.Ecc.LOW = new QrCode.Ecc(0, 1);
+            QrCode.Ecc.MEDIUM = new QrCode.Ecc(1, 0);
+            QrCode.Ecc.QUARTILE = new QrCode.Ecc(2, 3);
+            QrCode.Ecc.HIGH = new QrCode.Ecc(3, 2);
+            qrcodegen.QrCode = QrCode;
+
+            function appendBits(val, len, bb) {
+                if (len < 0 || len > 31 || val >>> len != 0) throw new RangeError("Value out of range");
+                for (let i = len - 1; i >= 0; i--) bb.push((val >>> i) & 1);
+            }
+            function getBit(x, i) { return ((x >>> i) & 1) != 0; }
+
+            class QrSegment {
+                constructor(mode, numChars, bitData) {
+                    this.mode = mode;
+                    this.numChars = numChars;
+                    if (numChars < 0) throw new RangeError("Invalid argument");
+                    this.bitData = bitData.slice();
+                }
+                static makeBytes(data) {
+                    let bb = [];
+                    for (const b of data) appendBits(b, 8, bb);
+                    return new QrSegment(QrSegment.Mode.BYTE, data.length, bb);
+                }
+                static makeNumeric(digits) {
+                    let bb = [];
+                    for (let i = 0; i < digits.length;) {
+                        const n = Math.min(digits.length - i, 3);
+                        appendBits(parseInt(digits.substr(i, n), 10), n * 3 + 1, bb);
+                        i += n;
+                    }
+                    return new QrSegment(QrSegment.Mode.NUMERIC, digits.length, bb);
+                }
+                static makeAlphanumeric(text) {
+                    let bb = [];
+                    let i;
+                    for (i = 0; i + 2 <= text.length; i += 2) {
+                        let temp = QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)) * 45;
+                        temp += QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i + 1));
+                        appendBits(temp, 11, bb);
+                    }
+                    if (i < text.length) appendBits(QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)), 6, bb);
+                    return new QrSegment(QrSegment.Mode.ALPHANUMERIC, text.length, bb);
+                }
+                static makeSegments(text) {
+                    if (text == "") return [];
+                    else if (QrSegment.NUMERIC_REGEX.test(text)) return [QrSegment.makeNumeric(text)];
+                    else if (QrSegment.ALPHANUMERIC_REGEX.test(text)) return [QrSegment.makeAlphanumeric(text)];
+                    else return [QrSegment.makeBytes(QrSegment.toUtf8ByteArray(text))];
+                }
+                getData() { return this.bitData.slice(); }
+                static getTotalBits(segs, version) {
+                    let result = 0;
+                    for (const seg of segs) {
+                        const ccbits = seg.mode.numCharCountBits(version);
+                        if (seg.numChars >= (1 << ccbits)) return Infinity;
+                        result += 4 + ccbits + seg.bitData.length;
+                    }
+                    return result;
+                }
+                static toUtf8ByteArray(str) {
+                    str = encodeURI(str);
+                    let result = [];
+                    for (let i = 0; i < str.length; i++) {
+                        if (str.charAt(i) != "%") result.push(str.charCodeAt(i));
+                        else { result.push(parseInt(str.substr(i + 1, 2), 16)); i += 2; }
+                    }
+                    return result;
+                }
+            }
+            QrSegment.NUMERIC_REGEX = /^[0-9]*$/;
+            QrSegment.ALPHANUMERIC_REGEX = /^[A-Z0-9 $%*+.\/:-]*$/;
+            QrSegment.ALPHANUMERIC_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+            QrSegment.Mode = class Mode {
+                constructor(modeBits, numBitsCharCount) { this.modeBits = modeBits; this.numBitsCharCount = numBitsCharCount; }
+                numCharCountBits(ver) { return this.numBitsCharCount[Math.floor((ver + 7) / 17)]; }
+            };
+            QrSegment.Mode.NUMERIC = new QrSegment.Mode(0x1, [10, 12, 14]);
+            QrSegment.Mode.ALPHANUMERIC = new QrSegment.Mode(0x2, [9, 11, 13]);
+            QrSegment.Mode.BYTE = new QrSegment.Mode(0x4, [8, 16, 16]);
+            qrcodegen.QrSegment = QrSegment;
+        })(qrcodegen || (qrcodegen = {}));
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script>
+    (function () {
+        'use strict';
+
+        // =============================================================
+        // Config: signaling host + room code
+        // =============================================================
+        // The frontend is served by Cloudflare Pages; the signaling server
+        // lives on Render. Locally, both are the same origin (the Go binary
+        // embeds this page), so we derive the WS host from where the page is
+        // served and only override for known production hosts.
+        const WS_HOST_OVERRIDES = {
+            'radar.zenlith.dev': 'radar-ws.zenlith.dev'
+        };
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = WS_HOST_OVERRIDES[location.hostname] || location.host;
+
+        // 31 unambiguous, URL-safe characters (no I/L/O/0/1).
+        const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        const ROOM_CODE_LEN = 22; // ~109 bits of entropy
+        function randomRoomCode(len) {
+            // The room code is the ONLY secret guarding a group's live location,
+            // so it must be genuinely unguessable. Draw each character with
+            // rejection sampling to keep the distribution perfectly uniform (a
+            // plain byte % 31 would bias toward the first few letters).
+            const out = [];
+            const max = 256 - (256 % ROOM_ALPHABET.length);
+            const buf = new Uint8Array(1);
+            while (out.length < len) {
+                crypto.getRandomValues(buf);
+                if (buf[0] < max) out.push(ROOM_ALPHABET[buf[0] % ROOM_ALPHABET.length]);
+            }
+            return out.join('');
+        }
+        function readRoomFromHash() {
+            const m = location.hash.match(/room=([A-Za-z0-9_-]{1,32})/);
+            return m ? m[1] : '';
+        }
+
+        // Ensure we always have a room code. If the page was opened cold (no
+        // hash), this visitor is the initiator: mint a fresh code and write it
+        // to the URL fragment so the link is instantly shareable. The fragment
+        // never reaches the server on page load.
+        let roomCode = readRoomFromHash();
+        const isInitiator = !roomCode;
+        if (!roomCode) {
+            roomCode = randomRoomCode(ROOM_CODE_LEN);
+            history.replaceState(null, '', location.pathname + location.search + '#room=' + roomCode);
+        }
+
+        function buildWsUrl() {
+            return `${wsProtocol}//${wsHost}/ws?room=${encodeURIComponent(roomCode)}`;
+        }
+        function inviteLink() {
+            return `${location.origin}${location.pathname}#room=${roomCode}`;
+        }
+
+        // =============================================================
+        // State
+        // =============================================================
+        const MAX_PEERS = 8;
+        const BROADCAST_MS = 2000;   // position heartbeat
+        const INTERP_MS = 1500;      // marker glide duration
+        const STALE_MS = 6000;       // no update for this long → fade
+        const MAX_RETRIES = 6;       // give up on a peer link after this (no TURN)
+
+        const peers = new Map();     // peerId -> peer state
+        let myId = null, myName = null;
+        let myPos = null;            // { lat, lng, acc, spd, hdg, ts }
+        let myMarker = null;
+        let map = null, mapReady = false, firstFixDone = false;
+        let followMe = false;
+        let ws = null, joined = false, reconnectTimer = null, sessionStarted = false;
+        let wakeLock = null;
+
+        // STUN only — no TURN by design. Some peer pairs on symmetric NATs
+        // (common on Indian mobile CGNAT) simply won't connect; the UI reports
+        // that honestly rather than silently pretending.
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        // =============================================================
+        // Elements
+        // =============================================================
+        const $ = (id) => document.getElementById(id);
+        const topbar = $('topbar'), mapControls = $('map-controls'), sheet = $('sheet');
+        const peerListEl = $('peer-list'), sheetSub = $('sheet-sub'), sheetTitle = $('sheet-title');
+        const meNameEl = $('me-name'), meshChip = $('chip-mesh'), meshText = $('mesh-text');
+        const gpsChip = $('chip-gps'), gpsText = $('gps-text');
+        const toastEl = $('toast');
+
+        // =============================================================
+        // Toast
+        // =============================================================
+        let toastTimer = null;
+        function toast(msg) {
+            toastEl.textContent = msg;
+            toastEl.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3000);
+        }
+
+        // =============================================================
+        // Join flow
+        // =============================================================
+        $('join-btn').addEventListener('click', startSession);
+        $('join-invite-btn').addEventListener('click', () => openInvite());
+        $('denied-retry').addEventListener('click', startSession);
+        $('error-retry').addEventListener('click', () => { hideOverlay('error-overlay'); startSession(); });
+
+        if (isInitiator) {
+            $('join-title').textContent = 'Start a radar';
+            $('join-desc').textContent = 'Create a private, temporary radar and invite your group. Everyone sees each other move live — directly device-to-device.';
+        }
+
+        function startSession() {
+            hideOverlay('join-overlay');
+            hideOverlay('denied-overlay');
+            // Geolocation permission must follow a user gesture on most mobile
+            // browsers, so we request it straight off the Join tap.
+            if (!('geolocation' in navigator)) {
+                showError('No location support', 'This browser can’t provide GPS location, so the radar can’t place you.');
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (pos) => { onPosition(pos); beginSession(); },
+                (err) => { onGeoError(err); },
+                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+        }
+
+        function onGeoError(err) {
+            if (err && err.code === 1) { // PERMISSION_DENIED
+                $('denied-steps').textContent = deniedInstructions();
+                showOverlay('denied-overlay');
+            } else {
+                showError('Location unavailable', 'Couldn’t get a GPS fix. Make sure location is on and you have a clear signal, then try again.');
+            }
+        }
+
+        function deniedInstructions() {
+            const ua = navigator.userAgent;
+            if (/iPhone|iPad|iPod/.test(ua)) {
+                return 'On iPhone: Settings → Safari → Location → Allow, then reload. Or tap the “aA” in the address bar → Website Settings → Location → Allow.';
+            }
+            if (/Android/.test(ua)) {
+                return 'On Android Chrome: tap the lock/⋮ near the address bar → Permissions → Location → Allow, then try again.';
+            }
+            return 'Click the lock icon in the address bar, set Location to Allow, then try again.';
+        }
+
+        let sessionBegun = false;
+        function beginSession() {
+            if (sessionBegun) return;
+            sessionBegun = true;
+            sessionStarted = true;
+
+            topbar.classList.remove('hidden');
+            mapControls.classList.remove('hidden');
+            sheet.classList.remove('hidden');
+
+            initMap();
+            connectWS();
+            startWatch();
+            requestWakeLock();
+            startLoops();
+
+            if (isInitiator) setTimeout(() => { if (peers.size === 0) openInvite(); }, 700);
+        }
+
+        // =============================================================
+        // Map
+        // =============================================================
+        function initMap() {
+            if (typeof maplibregl === 'undefined') {
+                showError('Map failed to load', 'The map library couldn’t be reached. Check your connection and retry.');
+                return;
+            }
+            map = new maplibregl.Map({
+                container: 'map',
+                style: {
+                    version: 8,
+                    sources: {
+                        carto: {
+                            type: 'raster',
+                            tiles: [
+                                'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                                'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                                'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                                'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+                            ],
+                            tileSize: 256,
+                            attribution: '© OpenStreetMap contributors © CARTO'
+                        }
+                    },
+                    layers: [{ id: 'carto', type: 'raster', source: 'carto' }]
+                },
+                center: myPos ? [myPos.lng, myPos.lat] : [73.8567, 18.5204], // fallback: Pune
+                zoom: myPos ? 15 : 11,
+                attributionControl: { compact: true }
+            });
+            map.on('load', () => {
+                mapReady = true;
+                if (myPos) placeMyMarker();
+                // Any peers that reported position before the map was ready.
+                peers.forEach((_, id) => renderPeerMarker(id));
+                if (myPos && !firstFixDone) { firstFixDone = true; map.jumpTo({ center: [myPos.lng, myPos.lat], zoom: 15 }); }
+            });
+            // User panning turns off follow-me.
+            map.on('dragstart', () => setFollow(false));
+        }
+
+        function placeMyMarker() {
+            if (myMarker || !myPos) return;
+            const el = document.createElement('div');
+            el.className = 'pin me';
+            el.innerHTML = '<div class="halo"></div><div class="dot"></div><div class="tag">You</div>';
+            myMarker = new maplibregl.Marker({ element: el, anchor: 'center' })
+                .setLngLat([myPos.lng, myPos.lat]).addTo(map);
+        }
+
+        function updateMyMarker() {
+            if (!mapReady || !myPos) return;
+            if (!myMarker) placeMyMarker();
+            else myMarker.setLngLat([myPos.lng, myPos.lat]);
+        }
+
+        // =============================================================
+        // Geolocation
+        // =============================================================
+        let watchId = null;
+        function startWatch() {
+            if (watchId !== null) return;
+            watchId = navigator.geolocation.watchPosition(onPosition, (err) => {
+                if (err && err.code === 1) toast('Location permission was revoked');
+            }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+        }
+
+        function onPosition(pos) {
+            const c = pos.coords;
+            myPos = {
+                lat: c.latitude, lng: c.longitude,
+                acc: c.accuracy,
+                spd: (typeof c.speed === 'number') ? c.speed : null,
+                hdg: (typeof c.heading === 'number') ? c.heading : null,
+                ts: Date.now()
+            };
+            updateMyMarker();
+            updateGps();
+            if (!firstFixDone && mapReady) { firstFixDone = true; map.jumpTo({ center: [myPos.lng, myPos.lat], zoom: 15 }); }
+            if (followMe && mapReady) map.easeTo({ center: [myPos.lng, myPos.lat], duration: 600 });
+        }
+
+        function updateGps() {
+            if (!myPos) return;
+            const acc = Math.round(myPos.acc || 0);
+            gpsText.textContent = acc ? `±${acc}m` : 'GPS';
+            gpsChip.className = 'chip ' + (acc && acc <= 30 ? 'ok' : acc && acc <= 80 ? 'warn' : 'bad');
+        }
+
+        // =============================================================
+        // WebSocket signaling
+        // =============================================================
+        function connectWS() {
+            ws = new WebSocket(buildWsUrl());
+            ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } handleSignal(m); };
+            ws.onclose = () => {
+                if (!joined) { showError('Couldn’t join', 'The radar may be full (max 8 people) or the signaling server is offline. Try again in a moment.'); return; }
+                setMeshStatus();
+                if (!reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWS(); }, 3000);
+            };
+            ws.onerror = () => {};
+        }
+        function wsSend(obj) {
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+        }
+
+        function handleSignal(m) {
+            switch (m.type) {
+                case 'welcome':
+                    // On reconnect the server issues a fresh id; rebuild cleanly.
+                    if (myId && myId !== m.from) resetMesh();
+                    myId = m.from; myName = m.name;
+                    meNameEl.textContent = myName;
+                    joined = true;
+                    setMeshStatus();
+                    break;
+                case 'peers':
+                    (m.peers || []).forEach(p => maybeConnect(p.id, p.name));
+                    updatePeerList();
+                    break;
+                case 'peer-joined':
+                    maybeConnect(m.from, m.name);
+                    toast(`${m.name} joined`);
+                    updatePeerList();
+                    break;
+                case 'peer-left': {
+                    const p = peers.get(m.from);
+                    const nm = p && p.name;
+                    dropPeer(m.from);
+                    if (nm) toast(`${nm} left`);
+                    break;
+                }
+                case 'offer': onOffer(m.from, m.sdp); break;
+                case 'answer': onAnswer(m.from, m.sdp); break;
+                case 'ice-candidate': onIce(m.from, m.candidate); break;
+            }
+        }
+
+        // =============================================================
+        // WebRTC mesh
+        // =============================================================
+        // Deterministic initiator rule avoids "glare": for any pair, the peer
+        // with the smaller id creates the offer; the other waits. This holds
+        // for both first contact and reconnection, so no side ever double-offers.
+        function shouldInitiate(peerId) { return myId && myId < peerId; }
+
+        function ensurePeer(peerId, name) {
+            let p = peers.get(peerId);
+            if (!p) {
+                p = {
+                    name: name || 'Someone', pc: null, dc: null,
+                    pending: [], remoteSet: false, attempts: 0,
+                    last: null, everSeen: false, unreachable: false,
+                    marker: null, render: null, target: null, from: null, interpStart: 0,
+                    hue: hueForId(peerId)
+                };
+                peers.set(peerId, p);
+            } else if (name) { p.name = name; }
+            return p;
+        }
+
+        function maybeConnect(peerId, name) {
+            if (peerId === myId) return;
+            const p = ensurePeer(peerId, name);
+            if (p.pc) return;
+            if (shouldInitiate(peerId)) createConnection(peerId, true);
+            // else: wait for their offer
+        }
+
+        function createConnection(peerId, initiator) {
+            const p = ensurePeer(peerId);
+            const pc = new RTCPeerConnection(rtcConfig);
+            p.pc = pc; p.remoteSet = false; p.pending = [];
+
+            pc.onicecandidate = (e) => {
+                if (e.candidate) wsSend({ type: 'ice-candidate', to: peerId, candidate: JSON.stringify(e.candidate) });
+            };
+            pc.onconnectionstatechange = () => onConnState(peerId, pc);
+
+            if (initiator) {
+                const dc = pc.createDataChannel('loc', { ordered: false, maxRetransmits: 0 });
+                attachDataChannel(peerId, dc);
+                pc.createOffer()
+                    .then(o => pc.setLocalDescription(o))
+                    .then(() => wsSend({ type: 'offer', to: peerId, sdp: JSON.stringify(pc.localDescription) }))
+                    .catch(err => console.error('offer', err));
+            } else {
+                pc.ondatachannel = (e) => attachDataChannel(peerId, e.channel);
+            }
+            return pc;
+        }
+
+        function onOffer(peerId, sdp) {
+            if (peerId === myId) return;
+            const p = ensurePeer(peerId);
+            if (!p.pc) createConnection(peerId, false);
+            const pc = p.pc;
+            pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sdp)))
+                .then(() => { p.remoteSet = true; flushCandidates(p); return pc.createAnswer(); })
+                .then(a => pc.setLocalDescription(a))
+                .then(() => wsSend({ type: 'answer', to: peerId, sdp: JSON.stringify(pc.localDescription) }))
+                .catch(err => console.error('answer', err));
+        }
+
+        function onAnswer(peerId, sdp) {
+            const p = peers.get(peerId);
+            if (!p || !p.pc) return;
+            p.pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sdp)))
+                .then(() => { p.remoteSet = true; flushCandidates(p); })
+                .catch(err => console.error('setRemote(answer)', err));
+        }
+
+        function onIce(peerId, cand) {
+            const p = peers.get(peerId);
+            if (!p || !p.pc) return;
+            const c = new RTCIceCandidate(JSON.parse(cand));
+            if (p.remoteSet) p.pc.addIceCandidate(c).catch(() => {});
+            else p.pending.push(c);
+        }
+        function flushCandidates(p) {
+            if (!p.pc) return;
+            p.pending.forEach(c => p.pc.addIceCandidate(c).catch(() => {}));
+            p.pending = [];
+        }
+
+        function attachDataChannel(peerId, dc) {
+            const p = ensurePeer(peerId);
+            p.dc = dc;
+            dc.binaryType = 'arraybuffer';
+            dc.onopen = () => { setMeshStatus(); sendMyPositionTo(dc); };
+            dc.onclose = () => setMeshStatus();
+            dc.onmessage = (e) => {
+                let m; try { m = JSON.parse(e.data); } catch { return; }
+                if (m.t === 'pos') onPeerPosition(peerId, m);
+                else if (m.t === 'bye') handlePeerBye(peerId);
+            };
+        }
+
+        // A peer told us directly (over the mesh) that they're leaving. This is
+        // the fast path: it removes them instantly and cleanly, without waiting
+        // for the server's peer-left or the staleness timer to catch up.
+        function handlePeerBye(peerId) {
+            const p = peers.get(peerId);
+            const nm = p && p.name;
+            dropPeer(peerId);
+            if (nm) toast(`${nm} left`);
+        }
+
+        function onConnState(peerId, pc) {
+            const p = peers.get(peerId);
+            if (!p || p.pc !== pc) return;
+            const s = pc.connectionState;
+            setMeshStatus();
+            if (s === 'connected') { p.attempts = 0; p.unreachable = false; }
+            else if (s === 'failed') { teardownPc(p); scheduleReconnect(peerId); }
+            updatePeerList();
+        }
+
+        function scheduleReconnect(peerId) {
+            const p = peers.get(peerId);
+            if (!p) return;
+            p.attempts++;
+            if (p.attempts > MAX_RETRIES) { p.unreachable = true; updatePeerList(); return; }
+            if (!shouldInitiate(peerId)) return; // the other side re-offers
+            const delay = Math.min(1200 * p.attempts, 5000);
+            setTimeout(() => {
+                const cur = peers.get(peerId);
+                if (cur && !cur.pc) createConnection(peerId, true);
+            }, delay);
+        }
+
+        function teardownPc(p) {
+            if (p.dc) { try { p.dc.close(); } catch {} p.dc = null; }
+            if (p.pc) { try { p.pc.close(); } catch {} p.pc = null; }
+            p.remoteSet = false; p.pending = [];
+        }
+
+        function dropPeer(peerId) {
+            const p = peers.get(peerId);
+            if (!p) return;
+            teardownPc(p);
+            if (p.marker) { try { p.marker.remove(); } catch {} }
+            peers.delete(peerId);
+            setMeshStatus();
+            updatePeerList();
+        }
+
+        function resetMesh() {
+            peers.forEach((_, id) => {
+                const p = peers.get(id);
+                teardownPc(p);
+                if (p.marker) { try { p.marker.remove(); } catch {} }
+            });
+            peers.clear();
+            setMeshStatus();
+            updatePeerList();
+        }
+
+        // =============================================================
+        // Position broadcast + receive
+        // =============================================================
+        function positionPayload() {
+            if (!myPos) return null;
+            return JSON.stringify({
+                t: 'pos', lat: myPos.lat, lng: myPos.lng,
+                acc: Math.round(myPos.acc || 0),
+                spd: myPos.spd, hdg: myPos.hdg, ts: Date.now()
+            });
+        }
+        function broadcastPosition() {
+            const payload = positionPayload();
+            if (!payload) return;
+            peers.forEach(p => { if (p.dc && p.dc.readyState === 'open') { try { p.dc.send(payload); } catch {} } });
+        }
+        function sendMyPositionTo(dc) {
+            const payload = positionPayload();
+            if (payload && dc.readyState === 'open') { try { dc.send(payload); } catch {} }
+        }
+        // Tell every connected peer we're leaving so they can drop us instantly.
+        function announceLeaving() {
+            const bye = JSON.stringify({ t: 'bye' });
+            peers.forEach(p => { if (p.dc && p.dc.readyState === 'open') { try { p.dc.send(bye); } catch {} } });
+        }
+
+        function onPeerPosition(peerId, m) {
+            const p = ensurePeer(peerId);
+            p.last = { lat: m.lat, lng: m.lng, acc: m.acc, spd: m.spd, hdg: m.hdg, ts: Date.now() };
+            p.everSeen = true;
+            renderPeerMarker(peerId);
+            updatePeerList();
+        }
+
+        // =============================================================
+        // Peer markers (with glide interpolation)
+        // =============================================================
+        function renderPeerMarker(peerId) {
+            const p = peers.get(peerId);
+            if (!p || !p.last || !mapReady) return;
+            if (!p.marker) {
+                const el = document.createElement('div');
+                el.className = 'pin';
+                el.style.setProperty('--pin-color', `hsl(${p.hue} 85% 62%)`);
+                el.innerHTML = '<div class="rotor"><div class="chevron"></div></div><div class="dot"></div><div class="tag"></div>';
+                p.marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+                    .setLngLat([p.last.lng, p.last.lat]).addTo(map);
+                p.render = { lat: p.last.lat, lng: p.last.lng };
+            }
+            // Set up a glide from the currently-rendered spot to the new target.
+            p.from = { lat: p.render.lat, lng: p.render.lng };
+            p.target = { lat: p.last.lat, lng: p.last.lng };
+            p.interpStart = performance.now();
+            paintMarkerVisual(p);
+        }
+
+        function paintMarkerVisual(p) {
+            if (!p.marker) return;
+            const el = p.marker.getElement();
+            const moving = typeof p.last.spd === 'number' && p.last.spd > 0.7 && typeof p.last.hdg === 'number';
+            el.classList.toggle('moving', moving);
+            if (moving) {
+                el.querySelector('.rotor').style.transform = `rotate(${p.last.hdg}deg)`;
+            }
+            const tag = el.querySelector('.tag');
+            const spd = (typeof p.last.spd === 'number' && p.last.spd > 0.5)
+                ? ` <span class="spd">· ${Math.round(p.last.spd * 3.6)} km/h</span>` : '';
+            tag.innerHTML = escapeHtml(p.name) + spd;
+        }
+
+        function animate(now) {
+            peers.forEach(p => {
+                if (!p.marker || !p.target || !p.from) return;
+                const t = Math.min(1, (now - p.interpStart) / INTERP_MS);
+                const lat = p.from.lat + (p.target.lat - p.from.lat) * t;
+                const lng = p.from.lng + (p.target.lng - p.from.lng) * t;
+                p.render = { lat, lng };
+                p.marker.setLngLat([lng, lat]);
+            });
+            requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+
+        // =============================================================
+        // Staleness + periodic broadcast loops
+        // =============================================================
+        function startLoops() {
+            setInterval(broadcastPosition, BROADCAST_MS);
+            setInterval(tickStaleness, 1000);
+        }
+        function tickStaleness() {
+            const now = Date.now();
+            let anyStale = false;
+            peers.forEach(p => {
+                if (!p.last) return;
+                const stale = (now - p.last.ts) > STALE_MS;
+                if (p.marker) p.marker.getElement().classList.toggle('stale', stale);
+                if (stale) anyStale = true;
+            });
+            if (anyStale) updatePeerList();
+        }
+
+        // =============================================================
+        // Peer list (bottom sheet)
+        // =============================================================
+        function updatePeerList() {
+            const now = Date.now();
+            const ids = [...peers.keys()];
+            // Sort: live first, then by distance if known.
+            ids.sort((a, b) => distSort(peers.get(a)) - distSort(peers.get(b)));
+
+            sheetSub.textContent = ids.length === 0 ? 'just you'
+                : `${ids.length + 1} ${ids.length + 1 === 2 ? 'people' : 'people'}`;
+            sheetTitle.textContent = 'On the radar';
+
+            peerListEl.innerHTML = '';
+            if (ids.length === 0) {
+                const li = document.createElement('li');
+                li.className = 'peer-empty';
+                li.innerHTML = isInitiator
+                    ? 'You’re the only one here.<br>Tap the invite button to bring your group in.'
+                    : 'Waiting for others to join…';
+                peerListEl.appendChild(li);
+                return;
+            }
+
+            ids.forEach(id => {
+                const p = peers.get(id);
+                const li = document.createElement('li');
+                li.className = 'peer-row';
+                li.setAttribute('role', 'button');
+                li.tabIndex = 0;
+                li.addEventListener('click', () => focusPeer(id));
+                li.addEventListener('keydown', (e) => { if (e.key === 'Enter') focusPeer(id); });
+
+                const dot = document.createElement('div');
+                dot.className = 'peer-dot';
+                dot.style.background = `hsl(${p.hue} 85% 62%)`;
+                dot.textContent = initials(p.name);
+
+                const meta = document.createElement('div');
+                meta.className = 'peer-meta';
+                const nm = document.createElement('div');
+                nm.className = 'peer-name';
+                nm.textContent = p.name;
+                const st = document.createElement('div');
+                st.className = 'peer-status';
+                setPeerStatus(st, dot, p, now);
+                meta.append(nm, st);
+
+                const dist = document.createElement('div');
+                dist.className = 'peer-dist';
+                if (myPos && p.last) {
+                    const d = haversine(myPos.lat, myPos.lng, p.last.lat, p.last.lng);
+                    dist.innerHTML = `<div class="d">${formatDist(d)}</div><div class="b">${bearingCompass(myPos.lat, myPos.lng, p.last.lat, p.last.lng)}</div>`;
+                }
+
+                li.append(dot, meta, dist);
+                peerListEl.appendChild(li);
+            });
+        }
+
+        function setPeerStatus(st, dot, p, now) {
+            const linked = p.pc && p.pc.connectionState === 'connected';
+            if (p.unreachable) {
+                st.textContent = 'Can’t connect (restrictive network)';
+                st.className = 'peer-status badc';
+            } else if (p.last && (now - p.last.ts) <= STALE_MS && linked) {
+                st.textContent = 'Live';
+                st.className = 'peer-status live';
+            } else if (p.last) {
+                st.textContent = `Last seen ${Math.round((now - p.last.ts) / 1000)}s ago`;
+                st.className = 'peer-status warnc';
+                dot.classList.add('stale');
+            } else if (linked) {
+                st.textContent = 'Linked — waiting for GPS';
+                st.className = 'peer-status warnc';
+            } else {
+                st.textContent = 'Connecting…';
+                st.className = 'peer-status';
+            }
+        }
+        function distSort(p) {
+            if (myPos && p.last) return haversine(myPos.lat, myPos.lng, p.last.lat, p.last.lng);
+            return p.last ? 1e8 : 1e9;
+        }
+
+        function focusPeer(id) {
+            const p = peers.get(id);
+            if (!p || !p.last || !mapReady) { toast('No fix for them yet'); return; }
+            setFollow(false);
+            map.easeTo({ center: [p.last.lng, p.last.lat], zoom: Math.max(map.getZoom(), 15), duration: 700 });
+        }
+
+        // =============================================================
+        // Mesh status chip
+        // =============================================================
+        function setMeshStatus() {
+            let open = 0;
+            peers.forEach(p => { if (p.dc && p.dc.readyState === 'open') open++; });
+            const total = peers.size;
+            meshText.textContent = total === 0 ? 'solo' : `${open}/${total} linked`;
+            meshChip.className = 'chip ' + (total === 0 ? '' : open === total ? 'ok' : open > 0 ? 'warn' : 'bad');
+        }
+
+        // =============================================================
+        // Controls: fit, follow, invite
+        // =============================================================
+        $('btn-fit').addEventListener('click', fitAll);
+        $('btn-follow').addEventListener('click', () => setFollow(!followMe));
+        $('btn-invite').addEventListener('click', () => openInvite());
+
+        function setFollow(on) {
+            followMe = on;
+            $('btn-follow').classList.toggle('active', on);
+            if (on && myPos && mapReady) map.easeTo({ center: [myPos.lng, myPos.lat], duration: 500 });
+        }
+
+        function fitAll() {
+            if (!mapReady) return;
+            const pts = [];
+            if (myPos) pts.push([myPos.lng, myPos.lat]);
+            peers.forEach(p => { if (p.last) pts.push([p.last.lng, p.last.lat]); });
+            if (pts.length === 0) return;
+            if (pts.length === 1) { map.easeTo({ center: pts[0], zoom: 15, duration: 700 }); return; }
+            const b = pts.reduce((bb, pt) => bb.extend(pt), new maplibregl.LngLatBounds(pts[0], pts[0]));
+            setFollow(false);
+            map.fitBounds(b, { padding: { top: 90, bottom: 200, left: 60, right: 60 }, maxZoom: 16, duration: 700 });
+        }
+
+        // =============================================================
+        // Invite modal
+        // =============================================================
+        $('invite-close').addEventListener('click', () => hideOverlay('invite-overlay'));
+        $('invite-copy').addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(inviteLink()); }
+            catch { const i = $('invite-link'); i.select(); document.execCommand('copy'); }
+            toast('Invite link copied');
+        });
+        $('invite-share').addEventListener('click', async () => {
+            const data = { title: 'Join my Radar', text: 'Tap to share your live location with our group:', url: inviteLink() };
+            if (navigator.share) { try { await navigator.share(data); } catch {} }
+            else { try { await navigator.clipboard.writeText(inviteLink()); toast('Link copied — paste it to your group'); } catch { toast('Copy the link above'); } }
+        });
+        function openInvite() {
+            $('invite-link').value = inviteLink();
+            showOverlay('invite-overlay');
+            renderQr(inviteLink());
+        }
+
+        // Render a scannable QR for the invite link as inline SVG (crisp at any
+        // size, no raster). The wrapper stays white so it scans in any theme.
+        // Uses the inlined Nayuki generator — no CDN, so it works offline too.
+        function renderQr(text) {
+            const wrap = $('qr-wrap'), el = $('qr-code');
+            try {
+                const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+                el.innerHTML = qrToSvg(qr, 4, '#ffffff', '#0f172a');
+                wrap.classList.remove('qr-error');
+            } catch (e) {
+                console.error('QR generation failed', e);
+                el.textContent = 'QR unavailable — use the link below';
+                wrap.classList.add('qr-error');
+            }
+        }
+        function qrToSvg(qr, border, light, dark) {
+            const dim = qr.size + border * 2;
+            let path = '';
+            for (let y = 0; y < qr.size; y++) {
+                for (let x = 0; x < qr.size; x++) {
+                    if (qr.getModule(x, y)) path += `M${x + border},${y + border}h1v1h-1z`;
+                }
+            }
+            return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}">`
+                + `<rect width="100%" height="100%" fill="${light}"/>`
+                + `<path d="${path}" fill="${dark}"/></svg>`;
+        }
+
+        // =============================================================
+        // Wake lock + visibility
+        // =============================================================
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => {});
+                }
+            } catch {}
+        }
+        // Mobile browsers release the screen wake lock whenever the tab is
+        // backgrounded, so re-acquire it each time we come back to the fore.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && sessionStarted) requestWakeLock();
+        });
+
+        // =============================================================
+        // Sheet toggle
+        // =============================================================
+        let sheetOpen = false;
+        const sheetHandle = $('sheet-handle');
+        function measureSheet() {
+            // Collapsed: show only the handle. Expanded: full sheet.
+            const full = sheet.scrollHeight;
+            const handleH = sheetHandle.offsetHeight;
+            document.documentElement.style.setProperty('--sheet-peek', handleH + 'px');
+            sheet.style.setProperty('--sheet-hidden', sheetOpen ? '0px' : (full - handleH) + 'px');
+        }
+        function toggleSheet(force) {
+            sheetOpen = (typeof force === 'boolean') ? force : !sheetOpen;
+            measureSheet();
+        }
+        sheetHandle.addEventListener('click', () => toggleSheet());
+        sheetHandle.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSheet(); } });
+        window.addEventListener('resize', measureSheet);
+        // Re-measure whenever the list changes size.
+        const listObserver = new MutationObserver(() => measureSheet());
+        listObserver.observe(peerListEl, { childList: true, subtree: true });
+        setTimeout(measureSheet, 200);
+
+        // =============================================================
+        // Overlay helpers
+        // =============================================================
+        function showOverlay(id) { $(id).classList.add('active'); }
+        function hideOverlay(id) { $(id).classList.remove('active'); }
+        function showError(title, desc) {
+            $('error-title').textContent = title;
+            $('error-desc').textContent = desc;
+            showOverlay('error-overlay');
+        }
+
+        // =============================================================
+        // Geo + format helpers
+        // =============================================================
+        function haversine(lat1, lon1, lat2, lon2) {
+            const R = 6371000, toRad = Math.PI / 180;
+            const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
+            const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+        function bearingCompass(lat1, lon1, lat2, lon2) {
+            const toRad = Math.PI / 180, toDeg = 180 / Math.PI;
+            const y = Math.sin((lon2 - lon1) * toRad) * Math.cos(lat2 * toRad);
+            const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) - Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos((lon2 - lon1) * toRad);
+            const brng = (Math.atan2(y, x) * toDeg + 360) % 360;
+            return ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(brng / 45) % 8];
+        }
+        function formatDist(m) {
+            if (m < 950) return `${Math.round(m / 10) * 10} m`;
+            return `${(m / 1000).toFixed(m < 9500 ? 1 : 0)} km`;
+        }
+        function initials(name) { return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(); }
+        function hueForId(id) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360; return h; }
+        function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+        // Clean exit: announce departure over the mesh (peers drop us at once)
+        // and close the socket so the server broadcasts peer-left to anyone we
+        // weren't directly connected to. Guarded so it runs only once, and only
+        // on a real unload — a mobile app-switch that freezes the page into
+        // bfcache (pagehide persisted=true) is not a departure.
+        let exited = false;
+        function onExit() {
+            if (exited) return;
+            exited = true;
+            announceLeaving();
+            if (wakeLock) { try { wakeLock.release(); } catch {} }
+            try { if (ws) ws.close(); } catch {}
+        }
+        window.addEventListener('pagehide', (e) => { if (!e.persisted) onExit(); });
+        window.addEventListener('beforeunload', onExit);
+    })();
+    </script>
+</body>
+
+</html>
