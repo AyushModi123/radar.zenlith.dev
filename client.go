@@ -9,10 +9,15 @@ import (
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 4096 // signaling envelopes only, never location data
+	writeWait = 10 * time.Second
+	// A peer who closes their tab or loses signal should drop off the radar
+	// quickly, so we probe often and time out fast rather than the usual ~60s.
+	// Browsers answer WebSocket pings at the protocol level even for a
+	// backgrounded tab, so only genuinely dead or frozen connections hit these
+	// deadlines — at which point dropping them off the radar is the right call.
+	pongWait       = 30 * time.Second
+	pingPeriod     = 10 * time.Second // must stay < pongWait
+	maxMessageSize = 4096             // signaling envelopes only, never location data
 	sendBufferSize = 64
 
 	// Mesh setup is bursty: a newcomer joining a room of 7 fires an offer to

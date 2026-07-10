@@ -1318,7 +1318,18 @@
             dc.onmessage = (e) => {
                 let m; try { m = JSON.parse(e.data); } catch { return; }
                 if (m.t === 'pos') onPeerPosition(peerId, m);
+                else if (m.t === 'bye') handlePeerBye(peerId);
             };
+        }
+
+        // A peer told us directly (over the mesh) that they're leaving. This is
+        // the fast path: it removes them instantly and cleanly, without waiting
+        // for the server's peer-left or the staleness timer to catch up.
+        function handlePeerBye(peerId) {
+            const p = peers.get(peerId);
+            const nm = p && p.name;
+            dropPeer(peerId);
+            if (nm) toast(`${nm} left`);
         }
 
         function onConnState(peerId, pc) {
@@ -1390,6 +1401,11 @@
         function sendMyPositionTo(dc) {
             const payload = positionPayload();
             if (payload && dc.readyState === 'open') { try { dc.send(payload); } catch {} }
+        }
+        // Tell every connected peer we're leaving so they can drop us instantly.
+        function announceLeaving() {
+            const bye = JSON.stringify({ t: 'bye' });
+            peers.forEach(p => { if (p.dc && p.dc.readyState === 'open') { try { p.dc.send(bye); } catch {} } });
         }
 
         function onPeerPosition(peerId, m) {
@@ -1742,8 +1758,21 @@
         function hueForId(id) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360; return h; }
         function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-        // Warn (don't block) if the group is already at the cap when arriving.
-        window.addEventListener('beforeunload', () => { if (wakeLock) { try { wakeLock.release(); } catch {} } });
+        // Clean exit: announce departure over the mesh (peers drop us at once)
+        // and close the socket so the server broadcasts peer-left to anyone we
+        // weren't directly connected to. Guarded so it runs only once, and only
+        // on a real unload — a mobile app-switch that freezes the page into
+        // bfcache (pagehide persisted=true) is not a departure.
+        let exited = false;
+        function onExit() {
+            if (exited) return;
+            exited = true;
+            announceLeaving();
+            if (wakeLock) { try { wakeLock.release(); } catch {} }
+            try { if (ws) ws.close(); } catch {}
+        }
+        window.addEventListener('pagehide', (e) => { if (!e.persisted) onExit(); });
+        window.addEventListener('beforeunload', onExit);
     })();
     </script>
 </body>
