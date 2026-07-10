@@ -415,7 +415,7 @@
         <ul class="peer-list" id="peer-list"></ul>
     </div>
 
-    <div class="paused-banner" id="paused-banner">⏸ Radar paused — your phone stops GPS while this tab is in the background</div>
+    <div class="paused-banner" id="paused-banner">⏱ Radar was paused in the background — catching up…</div>
     <div id="toast" role="status" aria-live="polite"></div>
 
     <!-- Join overlay -->
@@ -1161,6 +1161,7 @@
             };
             updateMyMarker();
             updateGps();
+            hidePaused(); // a fresh fix proves GPS is live — never show "paused"
             if (!firstFixDone && mapReady) { firstFixDone = true; map.jumpTo({ center: [myPos.lng, myPos.lat], zoom: 15 }); }
             if (followMe && mapReady) map.easeTo({ center: [myPos.lng, myPos.lat], duration: 600 });
         }
@@ -1654,12 +1655,31 @@
                 }
             } catch {}
         }
+        // The "paused" banner is a message for the moment the user RETURNS: it
+        // warns that GPS didn't update while the tab was backgrounded. Showing
+        // it *while* hidden is pointless (nobody sees it) and left it stuck on,
+        // so instead we flash it briefly on return and clear it the instant a
+        // fresh fix proves GPS is live again.
+        let hiddenSince = 0, pausedTimer = null;
+        function hidePaused() {
+            clearTimeout(pausedTimer);
+            pausedBanner.classList.remove('show');
+        }
+        function flashPaused() {
+            pausedBanner.classList.add('show');
+            clearTimeout(pausedTimer);
+            pausedTimer = setTimeout(hidePaused, 4000);
+        }
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
-                pausedBanner.classList.remove('show');
-                if (sessionStarted) { requestWakeLock(); }
+                if (sessionStarted) {
+                    requestWakeLock();
+                    // Only if we were away long enough that GPS likely stalled.
+                    if (hiddenSince && Date.now() - hiddenSince > 4000) flashPaused();
+                }
+                hiddenSince = 0;
             } else if (sessionStarted) {
-                pausedBanner.classList.add('show');
+                hiddenSince = Date.now();
             }
         });
 
